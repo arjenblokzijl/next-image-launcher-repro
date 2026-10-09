@@ -1,45 +1,59 @@
-This is a [Next.js](https://nextjs.org/) template to use when reporting a [bug in the Next.js repository](https://github.com/vercel/next.js/issues) with the `app/` directory.
+# Image optimizer crashes the function launcher when a local source answers 5xx
 
-## Getting Started
+## Link to the code that reproduces this issue
 
-These are the steps you should follow when creating a bug report:
+This repository. Live deployment: https://next-image-launcher-repro.vercel.app
 
-- Bug reports must be verified against the `next@canary` release. The canary version of Next.js ships daily and includes all features and fixes that have not been released to the stable version yet. Think of canary as a public beta. Some issues may already be fixed in the canary version, so please verify that your issue reproduces before opening a new issue. Issues not verified against `next@canary` will be closed after 30 days.
-- Make sure your issue is not a duplicate. Use the [GitHub issue search](https://github.com/vercel/next.js/issues) to see if there is already an open issue that matches yours. If that is the case, upvoting the other issue's first comment is desirable as we often prioritize issues based on the number of votes they receive. Note: Adding a "+1" or "same issue" comment without adding more context about the issue should be avoided. If you only find closed related issues, you can link to them using the issue number and `#`, eg.: `I found this related issue: #3000`.
-- If you think the issue is not in Next.js, the best place to ask for help is our [Discord community](https://nextjs.org/discord) or [GitHub discussions](https://github.com/vercel/next.js/discussions). Our community is welcoming and can often answer a project-related question faster than the Next.js core team.
-- Make the reproduction as minimal as possible. Try to exclude any code that does not help reproducing the issue. E.g. if you experience problems with Routing, including ESLint configurations or API routes aren't necessary. The less lines of code is to read through, the easier it is for the Next.js team to investigate. It may also help catching bugs in your codebase before publishing an issue.
-- Don't forget to create a new repository on GitHub and make it public so that anyone can view it and reproduce it.
+The whole reproduction is one route handler, `app/api/image/route.ts`:
 
-## How to use this template
-
-Execute [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app) with [npm](https://docs.npmjs.com/cli/init), [Yarn](https://yarnpkg.com/lang/en/docs/cli/create/), or [pnpm](https://pnpm.io) to bootstrap the example:
-
-```bash
-npx create-next-app --example reproduction-template reproduction-app
+```ts
+export function GET() {
+  return new Response(null, { status: 500 });
+}
 ```
 
-```bash
-yarn create next-app --example reproduction-template reproduction-app
+## To reproduce
+
+1. Deploy this app to Vercel (no env vars, no config).
+2. Request `/_next/image?url=%2Fapi%2Fimage&w=64&q=75` (or run `./repro.sh https://<deployment>.vercel.app`).
+3. Open the deployment's runtime logs.
+
+## Current vs. expected behavior
+
+Current: the visitor gets `400 INVALID_IMAGE_OPTIMIZE_REQUEST`, and the logs show the source request (`/api/image`, 500) followed within 200 ms by a second invocation, logged against `/_next/image`, that crashes the launcher:
+
+```
+Failed to handle /_next/image?url=%2Fapi%2Fimage&w=64&q=75
+Error: Cannot find module './.next/server/pages/_next/image.js'
+Require stack:
+- /var/task/___next_launcher.cjs
+- /opt/rust/nodejs.js
 ```
 
-```bash
-pnpm create next-app --example reproduction-template reproduction-app
+It happens on every request; the failed source is not cached.
+
+Expected: the optimizer answers the image request with an error status and does not call a function for `/_next/image`.
+
+## Provide environment information
+
+```
+Next.js: 16.5.0-canary.3 (also 16.4.0 in our production app)
+Node: 24 (nodejs24.x)
+Deployment: Vercel, Node.js runtime
 ```
 
-## Learn More
+## Which area(s) are affected?
 
-To learn more about Next.js, take a look at the following resources:
+Image (next/image), Runtime
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [How to Contribute to Open Source (Next.js)](https://www.youtube.com/watch?v=cuoNzXFLitc) - a video tutorial by Lee Robinson
-- [Triaging in the Next.js repository](https://github.com/vercel/next.js/blob/canary/contributing.md#triaging) - how we work on issues
-- [CodeSandbox](https://codesandbox.io/s/github/vercel/next.js/tree/canary/examples/reproduction-template) - Edit this repository on CodeSandbox
+## Which stage(s) are affected?
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+Vercel (Deployed)
 
-## Deployment
+## Additional context
 
-If your reproduction needs to be deployed, the easiest way is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `next start` answers the same request without errors; this only happens when deployed.
+- The trigger is a 5xx or a timeout from the local source. With a source that answers 403 or 404, there is no crash.
+- With a dynamic source route the crash carries the source's route params on the image path, for example `Failed to handle /_next/image?nxtPname=x.png` for `app/api/image/[name]/route.ts`. So the function is chosen from the source request, but it receives the outer `/_next/image` URL.
+- `./.next/server/pages/_next/image.js` is a relative path required by `___next_launcher.cjs`. An App Router build has no such module.
+- In our production app (Next 16.4.0, `trailingSlash: true`, a proxy that rewrites to a `[locale]` segment) this happened 35 times since 2026-07-26, always while the upstream behind the route handler was failing.
