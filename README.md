@@ -37,7 +37,7 @@ Expected: the optimizer answers the image request with an error status and does 
 ## Provide environment information
 
 ```
-Next.js: 16.5.0-canary.3 (also 16.4.0 in our production app)
+Next.js: 16.5.0-canary.5 (also 16.4.0 in our production app)
 Node: 24 (nodejs24.x)
 Deployment: Vercel, Node.js runtime
 ```
